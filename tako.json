@@ -1,0 +1,141 @@
+{
+  "$schema": "./schema/tako.schema.json",
+  "tako": 1,
+  "project": "tako-demo",
+  "description": "Tako 示例清单：3 条连接（arm）+ 5 个动词（verb），覆盖 read / write / destructive 三个风险等级",
+
+  "arms": [
+    {
+      "name": "httpbin",
+      "adapter": "http",
+      "baseUrl": "https://httpbin.org",
+      "description": "公开测试 API，无需鉴权，用于本地演示",
+      "auth": { "type": "none" }
+    },
+    {
+      "name": "internal",
+      "adapter": "http",
+      "baseUrl": "https://httpbin.org",
+      "description": "需要令牌的平台。令牌只从环境变量读取，绝不写进清单",
+      "auth": { "type": "bearer", "tokenEnv": "DEMO_TOKEN" }
+    },
+    {
+      "name": "local",
+      "adapter": "script",
+      "description": "本机脚本能力，不需要网络"
+    }
+  ],
+
+  "verbs": [
+    {
+      "name": "echo",
+      "arm": "httpbin",
+      "description": "回显一段文本，用来确认链路连通",
+      "risk": "read",
+      "idempotent": true,
+      "aiExample": "当用户说「测一下接口通不通」「回显这段文本」时调用。",
+      "action": {
+        "method": "GET",
+        "path": "/get"
+      },
+      "params": [
+        {
+          "name": "message",
+          "in": "query",
+          "type": "string",
+          "required": true,
+          "description": "要回显的文本",
+          "example": "hello-tako"
+        },
+        {
+          "name": "tag",
+          "in": "query",
+          "type": "string",
+          "default": "tako",
+          "description": "附加标签，原样透传给服务端"
+        }
+      ]
+    },
+    {
+      "name": "post-json",
+      "arm": "httpbin",
+      "description": "以 JSON 体提交数据，返回服务端看到的完整请求",
+      "risk": "write",
+      "aiExample": "当用户说「把这段 JSON 提交上去」「POST 一个 payload 看看服务端收到什么」时调用。",
+      "action": {
+        "method": "POST",
+        "path": "/post",
+        "headers": { "Content-Type": "application/json" }
+      },
+      "params": [
+        {
+          "name": "payload",
+          "in": "body",
+          "type": "object",
+          "required": true,
+          "description": "任意 JSON 对象，作为请求体直接发送",
+          "example": { "hello": "tako", "n": 1 }
+        }
+      ]
+    },
+    {
+      "name": "whoami",
+      "arm": "internal",
+      "description": "用托管令牌调用需要鉴权的接口，确认凭证是否有效",
+      "risk": "read",
+      "idempotent": true,
+      "aiExample": "当用户问「令牌还有效吗」「我是谁」，或内部接口返回 401 时调用。",
+      "action": {
+        "method": "GET",
+        "path": "/bearer"
+      }
+    },
+    {
+      "name": "summary",
+      "arm": "local",
+      "description": "对内置示例数据做统计并返回 Top N，演示 script 适配器（离线可跑）",
+      "risk": "read",
+      "idempotent": true,
+      "aiExample": "当用户说「统计一下这份数据」「给我看 Top 3」时调用。",
+      "action": {
+        "script": "./scripts/summary.mjs"
+      },
+      "params": [
+        {
+          "name": "dataset",
+          "type": "string",
+          "default": "traffic",
+          "enum": ["traffic", "errors"],
+          "description": "要统计的数据集"
+        },
+        {
+          "name": "top",
+          "type": "number",
+          "default": 3,
+          "description": "返回前 N 条"
+        }
+      ]
+    },
+    {
+      "name": "purge-cache",
+      "arm": "httpbin",
+      "description": "清空远端缓存。危险操作，默认拒绝执行，必须显式 --yes",
+      "risk": "destructive",
+      "aiExample": "仅当用户明确说「清空缓存」时调用；执行前必须复述影响范围并获得确认。",
+      "action": {
+        "method": "DELETE",
+        "path": "/delete"
+      },
+      "params": [
+        {
+          "name": "scope",
+          "in": "query",
+          "type": "string",
+          "required": true,
+          "enum": ["all", "stale"],
+          "description": "清理范围"
+        }
+      ]
+    }
+  ]
+}

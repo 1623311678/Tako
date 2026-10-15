@@ -1,0 +1,55 @@
+{
+  "name": "@hun-dun/tako",
+  "version": "0.1.0",
+  "description": "让 AI 会操作。一份 tako.json，把系统声明成 AI 可调用的能力 —— GUI / CLI / Agent 三端同源。",
+  "type": "module",
+  "bin": {
+    "tako": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "packs",
+    "schema",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').chmodSync('dist/cli.js',0o755)\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
+    "tako": "node dist/cli.js",
+    "ls": "node dist/cli.js ls",
+    "doctor": "node dist/cli.js doctor",
+    "tools": "node dist/cli.js tools"
+  },
+  "keywords": [
+    "tako",
+    "cli",
+    "capability",
+    "manifest",
+    "agent",
+    "ai-tools",
+    "function-calling",
+    "automation"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.6.0"
+  }
+}

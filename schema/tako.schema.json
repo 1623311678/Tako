@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://takocli.dev/schema/tako-1.json",
+  "title": "Tako Capability Manifest",
+  "description": "Tako 能力清单（tako.json）。一份声明同时驱动 GUI 表单、CLI 命令与 AI Agent 工具定义。",
+  "type": "object",
+  "required": ["tako", "project", "arms", "verbs"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "指向本文件的相对路径，供编辑器提供补全与实时校验"
+    },
+    "tako": {
+      "const": 1,
+      "description": "清单格式版本"
+    },
+    "project": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "项目标识，用于产物目录与包名"
+    },
+    "description": {
+      "type": "string"
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "对所有动词生效的默认值",
+      "properties": {
+        "risk": { "$ref": "#/$defs/risk" },
+        "timeoutMs": { "type": "integer", "minimum": 1 },
+        "arm": { "type": "string" }
+      }
+    },
+    "arms": {
+      "type": "array",
+      "minItems": 1,
+      "description": "一条连接（arm）= 一个接入的平台及其鉴权方式",
+      "items": { "$ref": "#/$defs/arm" }
+    },
+    "verbs": {
+      "type": "array",
+      "minItems": 1,
+      "description": "一个动词 = 一条可被调用的能力",
+      "items": { "$ref": "#/$defs/verb" }
+    }
+  },
+  "$defs": {
+    "risk": {
+      "enum": ["read", "write", "destructive"],
+      "description": "风险等级：read 只读 / write 会改数据 / destructive 不可逆，需显式 --yes"
+    },
+    "paramType": {
+      "enum": ["string", "number", "boolean", "object", "array"]
+    },
+    "paramLocation": {
+      "enum": ["query", "path", "body", "header", "arg"],
+      "description": "参数去向；script 适配器使用 arg"
+    },
+    "arm": {
+      "type": "object",
+      "required": ["name", "adapter"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$" },
+        "adapter": {
+          "enum": ["http", "script", "browser"],
+          "description": "适配器类型：http 直连接口 / script 本地脚本 / browser 浏览器自动化（需插件）"
+        },
+        "baseUrl": { "type": "string", "description": "http 适配器的基地址，可用 ${ENV_VAR} 引用环境变量" },
+        "description": { "type": "string" },
+        "auth": { "$ref": "#/$defs/auth" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "description": "认证全托管：清单里只写“去哪里取值”，永不写值本身",
+      "properties": {
+        "type": { "enum": ["none", "bearer", "header", "cookie", "basic"] },
+        "tokenEnv": { "type": "string", "description": "读取令牌的环境变量名" },
+        "prefix": { "type": "string", "description": "令牌前缀，默认 Bearer" },
+        "header": { "type": "string", "description": "type=header 时的请求头名" }
+      }
+    },
+    "verb": {
+      "type": "object",
+      "required": ["name", "arm", "description", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "description": "动词名，即命令名"
+        },
+        "arm": { "type": "string" },
+        "description": { "type": "string", "description": "一句话说明这条能力做什么" },
+        "aiExample": {
+          "type": "string",
+          "description": "Agent 判断“何时该调用”的自然语言示例，是自动路由的关键字段"
+        },
+        "risk": { "$ref": "#/$defs/risk" },
+        "idempotent": {
+          "type": "boolean",
+          "description": "重复执行是否安全；为 true 时 Agent 可自动重试"
+        },
+        "timeoutMs": { "type": "integer", "minimum": 1 },
+        "tags": { "type": "array", "items": { "type": "string" } },
+        "action": { "$ref": "#/$defs/action" },
+        "params": { "type": "array", "items": { "$ref": "#/$defs/param" } }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] },
+        "path": { "type": "string", "description": "支持 :name 或 {name} 占位符，由 in=path 的参数填充" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "script": { "type": "string", "description": "相对清单目录的脚本路径，default export 作为入口" },
+        "flow": { "type": "string", "description": "browser 适配器的声明式操作序列标识" }
+      }
+    },
+    "param": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "$ref": "#/$defs/paramType" },
+        "in": { "$ref": "#/$defs/paramLocation" },
+        "required": { "type": "boolean", "default": false },
+        "default": {},
+        "description": { "type": "string" },
+        "example": {},
+        "enum": { "type": "array" },
+        "secret": {
+          "type": "boolean",
+          "description": "为 true 时从 TAKO_SECRET_<NAME> 读取，输出中自动脱敏"
+        }
+      }
+    }
+  }
+}

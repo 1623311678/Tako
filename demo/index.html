@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tako · 一份清单，三种消费者</title>
+<style>
+  :root {
+    --ink: #0d1117;
+    --ink-2: #141b24;
+    --ink-3: #1b2530;
+    --line: #24303d;
+    --text: #e6edf3;
+    --muted: #8b98a5;
+    --accent: #ff7a59;
+    --accent-soft: rgba(255, 122, 89, .14);
+    --cyan: #4dd8e0;
+    --green: #56d364;
+    --yellow: #e3b341;
+    --red: #f85149;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+            "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1100px 620px at 82% -12%, rgba(255,122,89,.12), transparent 62%),
+      radial-gradient(820px 520px at 6% 106%, rgba(77,216,224,.10), transparent 60%),
+      var(--ink);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  header {
+    padding: 34px 34px 22px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+
+  .mark { flex: none; }
+  .mark svg { display: block; }
+
+  .titles h1 {
+    margin: 0;
+    font-size: 25px;
+    letter-spacing: -.02em;
+    font-weight: 650;
+  }
+
+  .titles p {
+    margin: 3px 0 0;
+    color: var(--muted);
+    font-size: 13.5px;
+  }
+
+  .source {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    background: var(--ink-2);
+    padding: 6px 11px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+
+  .source b { color: var(--cyan); font-weight: 600; }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 268px minmax(0, 1fr);
+    gap: 0;
+    min-height: calc(100vh - 111px);
+  }
+
+  nav {
+    border-right: 1px solid var(--line);
+    padding: 20px 14px;
+    background: linear-gradient(180deg, rgba(255,255,255,.014), transparent);
+  }
+
+  .nav-label {
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 0 10px 10px;
+  }
+
+  .verb {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    padding: 10px 11px;
+    color: var(--text);
+    cursor: pointer;
+    font-family: var(--sans);
+    font-size: 13.5px;
+    display: block;
+    transition: background .14s, border-color .14s;
+  }
+
+  .verb:hover { background: var(--ink-2); }
+
+  .verb[aria-current="true"] {
+    background: var(--accent-soft);
+    border-color: rgba(255,122,89,.42);
+  }
+
+  .verb .row1 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: space-between;
+  }
+
+  .verb .vname { font-family: var(--mono); font-size: 13px; }
+
+  .verb .vdesc {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 3px;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .risk {
+    font-size: 10.5px;
+    font-family: var(--mono);
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    flex: none;
+    opacity: .95;
+  }
+
+  .risk.read { color: var(--green); }
+  .risk.write { color: var(--yellow); }
+  .risk.destructive { color: var(--red); }
+
+  main { padding: 24px 28px 56px; min-width: 0; }
+
+  .verb-head { margin-bottom: 22px; }
+
+  .verb-head h2 {
+    margin: 0 0 6px;
+    font-family: var(--mono);
+    font-size: 20px;
+    font-weight: 600;
+  }
+
+  .verb-head .meta {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+
+  .chip {
+    border: 1px solid var(--line);
+    background: var(--ink-2);
+    border-radius: 999px;
+    padding: 2px 9px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+
+  .ai-note {
+    margin-top: 12px;
+    border-left: 2px solid var(--cyan);
+    padding: 8px 0 8px 12px;
+    color: var(--muted);
+    font-size: 13px;
+    background: linear-gradient(90deg, rgba(77,216,224,.06), transparent 70%);
+  }
+
+  .ai-note b { color: var(--cyan); font-weight: 600; }
+
+  .panels {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+    gap: 16px;
+    align-items: start;
+  }
+
+  .panel {
+    background: var(--ink-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 12px 15px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(255,255,255,.017);
+  }
+
+  .panel-head .tag {
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 650;
+    font-family: var(--mono);
+  }
+
+  .panel-head .what { color: var(--muted); font-size: 12px; }
+
+  .panel-body { padding: 15px; }
+
+  .field { margin-bottom: 13px; }
+  .field:last-child { margin-bottom: 0; }
+
+  .field label {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    font-size: 12.5px;
+    color: var(--muted);
+    margin-bottom: 5px;
+  }
+
+  .field label .pname { font-family: var(--mono); color: var(--text); }
+  .field label .req { color: var(--red); font-size: 11px; }
+  .field label .ptype { font-family: var(--mono); font-size: 11px; opacity: .7; }
+
+  input[type="text"], input[type="number"], select, textarea {
+    width: 100%;
+    background: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: var(--mono);
+    outline: none;
+    transition: border-color .14s, box-shadow .14s;
+  }
+
+  input:focus, select:focus, textarea:focus {
+    border-color: rgba(255,122,89,.6);
+    box-shadow: 0 0 0 3px rgba(255,122,89,.13);
+  }
+
+  textarea { resize: vertical; min-height: 74px; line-height: 1.5; }
+
+  .switch {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 12.5px;
+  }
+
+  .switch input { width: 15px; height: 15px; accent-color: var(--accent); }
+
+  .run-btn {
+    margin-top: 16px;
+    width: 100%;
+    border: none;
+    border-radius: 9px;
+    padding: 10px;
+    font-size: 13.5px;
+    font-weight: 600;
+    font-family: var(--sans);
+    cursor: pointer;
+    background: var(--accent);
+    color: #1a0d07;
+    transition: filter .14s, opacity .14s;
+  }
+
+  .run-btn:hover { filter: brightness(1.08); }
+  .run-btn[data-danger="true"] { background: var(--red); color: #1c0503; }
+  .run-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+  pre {
+    margin: 0;
+    padding: 15px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #cfe3ef;
+  }
+
+  .cmd { color: var(--text); }
+  .cmd .bin { color: var(--accent); font-weight: 600; }
+  .cmd .sub { color: var(--cyan); }
+  .cmd .flag { color: var(--yellow); }
+  .cmd .str { color: var(--green); }
+  .cmd .dim { color: var(--muted); }
+
+  .out {
+    border-top: 1px solid var(--line);
+    background: var(--ink);
+    max-height: 250px;
+    overflow: auto;
+  }
+
+  .hint { color: var(--muted); font-size: 12.5px; padding: 15px; }
+  .err { color: var(--red); }
+
+  .copy {
+    margin-left: auto;
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    border-radius: 7px;
+    font-size: 11.5px;
+    padding: 4px 9px;
+    cursor: pointer;
+    font-family: var(--mono);
+  }
+
+  .copy:hover { color: var(--text); border-color: var(--muted); }
+
+  footer {
+    padding: 20px 34px 34px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+
+  footer code { font-family: var(--mono); color: var(--cyan); }
+
+  @media (max-width: 780px) {
+    .layout { grid-template-columns: 1fr; }
+    nav { border-right: none; border-bottom: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="mark">
+    <svg width="42" height="42" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <circle cx="24" cy="17" r="11" fill="none" stroke="#ff7a59" stroke-width="2.4"/>
+      <circle cx="20" cy="15.5" r="1.55" fill="#ff7a59"/>
+      <circle cx="28" cy="15.5" r="1.55" fill="#ff7a59"/>
+      <g stroke="#4dd8e0" stroke-width="2.2" stroke-linecap="round" fill="none">
+        <path d="M15 25c-2.6 3.4-3.1 7.4-1.4 12.4"/>
+        <path d="M20.5 27c-1.3 3.6-1.2 7.6.9 12.2"/>
+        <path d="M27.5 27c1.3 3.6 1.2 7.6-.9 12.2"/>
+        <path d="M33 25c2.6 3.4 3.1 7.4 1.4 12.4"/>
+      </g>
+    </svg>
+  </div>
+  <div class="titles">
+    <h1>Tako</h1>
+    <p>让 AI 会操作 · 一份清单，GUI / CLI / Agent 三端同源</p>
+  </div>
+  <div class="source">manifest: <b id="sourceName">加载中…</b></div>
+</header>
+
+<div class="layout">
+  <nav><div class="nav-label">能力清单 / Verbs</div><div id="verbList"></div></nav>
+  <main>
+    <div class="verb-head" id="verbHead"></div>
+    <div class="panels">
+
+      <section class="panel">
+        <div class="panel-head">
+          <span class="tag">GUI</span>
+          <span class="what">由 params 渲染</span>
+        </div>
+        <div class="panel-body" id="formPane"></div>
+        <div class="out" id="guiOut" hidden></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span class="tag">CLI</span>
+          <span class="what">同一份 params 派生</span>
+          <button class="copy" data-copy="cli">复制</button>
+        </div>
+        <pre class="cmd" id="cliPane"></pre>
+        <div class="out" id="cliOut" hidden></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span class="tag">AGENT</span>
+          <span class="what">tools 定义</span>
+          <button class="copy" data-copy="tool">复制</button>
+        </div>
+        <pre id="toolPane"></pre>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<footer>
+  三个面板读的是<b>同一份</b>清单。改一处 <code>tako.json</code>，表单、命令、工具定义同时变 —— 这就是「三端同源」。
+  这个页面对清单是只读的：它不会真的执行任何能力。
+</footer>
+
+<script type="module">
+/* 内嵌一份清单作为兜底，保证双击打开也能用；能 fetch 到 tako.json 时以文件为准。 */
+const FALLBACK = {
+  "$schema": "./schema/tako.schema.json",
+  "tako": 1,
+  "project": "tako-demo",
+  "description": "Tako 示例清单",
+  "arms": [
+    { "name": "httpbin", "adapter": "http", "baseUrl": "https://httpbin.org", "auth": { "type": "none" } },
+    { "name": "internal", "adapter": "http", "baseUrl": "https://httpbin.org", "auth": { "type": "bearer", "tokenEnv": "DEMO_TOKEN" } },
+    { "name": "local", "adapter": "script" }
+  ],
+  "verbs": [
+    {
+      "name": "echo", "arm": "httpbin", "description": "回显一段文本，用来确认链路连通",
+      "risk": "read", "idempotent": true,
+      "aiExample": "当用户说「测一下接口通不通」「回显这段文本」时调用。",
+      "action": { "method": "GET", "path": "/get" },
+      "params": [
+        { "name": "message", "in": "query", "type": "string", "required": true, "description": "要回显的文本", "example": "hello-tako" },
+        { "name": "tag", "in": "query", "type": "string", "default": "tako", "description": "附加标签，原样透传给服务端" }
+      ]
+    },
+    {
+      "name": "summary", "arm": "local", "description": "对内置示例数据做统计并返回 Top N",
+      "risk": "read", "idempotent": true,
+      "aiExample": "当用户说「统计一下这份数据」「给我看 Top 3」时调用。",
+      "action": { "script": "./scripts/summary.mjs" },
+      "params": [
+        { "name": "dataset", "type": "string", "default": "traffic", "enum": ["traffic", "errors"], "description": "要统计的数据集" },
+        { "name": "top", "type": "number", "default": 3, "description": "返回前 N 条" }
+      ]
+    },
+    {
+      "name": "purge-cache", "arm": "httpbin", "description": "清空远端缓存，危险操作",
+      "risk": "destructive",
+      "aiExample": "仅当用户明确说「清空缓存」时调用。",
+      "action": { "method": "DELETE", "path": "/delete" },
+      "params": [
+        { "name": "scope", "in": "query", "type": "string", "required": true, "enum": ["all", "stale"], "description": "清理范围" }
+      ]
+    }
+  ]
+};
+
+const RESERVED = new Set(['json', 'dry-run', 'yes', 'verbose', 'file', 'help', 'arm', 'risk']);
+let manifest = FALLBACK;
+let current = 0;
+
+/* ── 加载清单 ─────────────────────────────────────────── */
+if (location.protocol !== 'file:') {
+  try {
+    const response = await fetch('../tako.json', { cache: 'no-store' });
+    if (response.ok) {
+      manifest = await response.json();
+      document.getElementById('sourceName').textContent = 'tako.json';
+    } else {
+      throw new Error(String(response.status));
+    }
+  } catch {
+    document.getElementById('sourceName').textContent = '内嵌副本（fetch 失败）';
+  }
+} else {
+  document.getElementById('sourceName').textContent = '内嵌副本（file:// 模式）';
+}
+
+const verbs = manifest.verbs;
+const armOf = (name) => (manifest.arms ?? []).find((arm) => arm.name === name) ?? {};
+
+/* ── 渲染动词列表 ─────────────────────────────────────── */
+const verbList = document.getElementById('verbList');
+verbs.forEach((verb, index) => {
+  const button = document.createElement('button');
+  button.className = 'verb';
+  button.type = 'button';
+  button.innerHTML = `
+    <span class="row1">
+      <span class="vname">${escapeHtml(verb.name)}</span>
+      <span class="risk ${verb.risk ?? 'read'}">${verb.risk ?? 'read'}</span>
+    </span>
+    <span class="vdesc">${escapeHtml(verb.description ?? '')}</span>`;
+  button.addEventListener('click', () => select(index));
+  verbList.appendChild(button);
+});
+
+/* ── 选中一个动词 ─────────────────────────────────────── */
+function select(index) {
+  current = index;
+  [...verbList.children].forEach((node, i) => node.setAttribute('aria-current', String(i === index)));
+  render();
+}
+
+function render() {
+  const verb = verbs[current];
+  const arm = armOf(verb.arm);
+  const params = verb.params ?? [];
+
+  document.getElementById('verbHead').innerHTML = `
+    <h2>${escapeHtml(verb.name)}</h2>
+    <div class="meta">
+      <span class="risk ${verb.risk ?? 'read'}">${verb.risk ?? 'read'}</span>
+      <span class="chip">arm: ${escapeHtml(verb.arm)} · ${escapeHtml(arm.adapter ?? '?')}</span>
+      <span class="chip">${verb.idempotent ? '幂等' : '非幂等'}</span>
+      <span>${escapeHtml(verb.description ?? '')}</span>
+    </div>
+    ${verb.aiExample ? `<div class="ai-note"><b>Agent 何时调用</b> · ${escapeHtml(verb.aiExample)}</div>` : ''}`;
+
+  renderForm(verb, params);
+  renderCli(verb, params);
+  renderTool(verb, params);
+}
+
+/* ── 面板一：GUI 表单 ─────────────────────────────────── */
+function renderForm(verb, params) {
+  const pane = document.getElementById('formPane');
+  pane.innerHTML = '';
+
+  if (params.length === 0) {
+    pane.innerHTML = '<div class="hint">这个动词不需要参数。</div>';
+  }
+
+  for (const param of params) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'field';
+    const label = `
+      <span class="pname">${escapeHtml(param.name)}</span>
+      ${param.required ? '<span class="req">必填</span>' : ''}
+      <span class="ptype">${escapeHtml(param.type ?? 'string')}${param.in ? ' · ' + escapeHtml(param.in) : ''}</span>`;
+    const describe = `<div class="vdesc" style="color:var(--muted);font-size:12px;margin-top:4px">${escapeHtml(param.description ?? '')}</div>`;
+
+    let control;
+    if (param.enum) {
+      control = `<select data-param="${escapeHtml(param.name)}">
+        ${param.enum.map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join('')}
+      </select>`;
+    } else if (param.type === 'boolean') {
+      control = `<label class="switch"><input type="checkbox" data-param="${escapeHtml(param.name)}"> ${escapeHtml(param.name)}</label>`;
+    } else if (param.type === 'object' || param.type === 'array') {
+      control = `<textarea data-param="${escapeHtml(param.name)}" placeholder='${escapeHtml(JSON.stringify(param.example ?? {}))}'></textarea>`;
+    } else if (param.type === 'number') {
+      control = `<input type="number" data-param="${escapeHtml(param.name)}" value="${param.default ?? ''}">`;
+    } else {
+      control = `<input type="text" data-param="${escapeHtml(param.name)}" value="${escapeHtml(param.default ?? '')}" placeholder="${escapeHtml(param.example ?? '')}">`;
+    }
+
+    wrapper.innerHTML = `<label>${label}</label>${control}${describe}`;
+    pane.appendChild(wrapper);
+  }
+
+  const button = document.createElement('button');
+  button.className = 'run-btn';
+  button.type = 'button';
+  button.dataset.danger = String(verb.risk === 'destructive');
+  button.textContent = verb.risk === 'destructive' ? '确认执行（危险，需 --yes）' : '执行';
+  button.addEventListener('click', () => previewRun(verb));
+  pane.appendChild(button);
+}
+
+function collect(verb) {
+  const values = {};
+  for (const param of verb.params ?? []) {
+    const node = document.querySelector(`[data-param="${CSS.escape(param.name)}"]`);
+    if (!node) continue;
+    if (param.type === 'boolean') {
+      values[param.name] = node.checked;
+    } else if (node.value !== '') {
+      values[param.name] = node.value;
+    }
+  }
+  return values;
+}
+
+function previewRun(verb) {
+  const out = document.getElementById('guiOut');
+  out.hidden = false;
+  out.innerHTML = renderPlan(verb, collect(verb));
+}
+
+function renderPlan(verb, values) {
+  const arm = armOf(verb.arm);
+  const lines = [];
+
+  if (verb.risk === 'destructive') {
+    lines.push('<span class="err">已拦截：destructive 级操作，需要显式 --yes</span>');
+    lines.push('');
+  }
+
+  if (verb.action?.script) {
+    lines.push(`<span class="dim">script</span> ${escapeHtml(verb.action.script)}`);
+    lines.push(`<span class="dim">args  </span> ${escapeHtml(JSON.stringify(values))}`);
+  } else {
+    const query = new URLSearchParams();
+    for (const param of verb.params ?? []) {
+      if ((param.in ?? 'query') === 'query' && values[param.name] !== undefined) {
+        query.set(param.name, String(values[param.name]));
+      }
+    }
+    const suffix = query.toString() ? `?${query}` : '';
+    lines.push(`<span class="dim">${escapeHtml(verb.action?.method ?? 'GET')}</span> ${escapeHtml((arm.baseUrl ?? '') + (verb.action?.path ?? ''))}${escapeHtml(suffix)}`);
+    if (arm.auth?.type && arm.auth.type !== 'none') {
+      lines.push(`<span class="dim">鉴权</span> ${escapeHtml(arm.auth.type)} ← 环境变量 ${escapeHtml(arm.auth.tokenEnv ?? '未声明')}（由适配器注入，清单里没有令牌）`);
+    }
+    const bodies = (verb.params ?? []).filter((param) => param.in === 'body');
+    if (bodies.length > 0) {
+      lines.push(`<span class="dim">body</span> ${escapeHtml(JSON.stringify(values[bodies[0].name] ?? {}))}`);
+    }
+  }
+
+  lines.push('');
+  lines.push('<span class="dim">提示：这里只是静态预览。真正执行请在终端里跑下面的命令。</span>');
+  return lines.join('\n');
+}
+
+/* ── 面板二：CLI 命令 ─────────────────────────────────── */
+document.getElementById('formPane').addEventListener('input', () => render());
+document.getElementById('formPane').addEventListener('change', () => render());
+
+function renderCli(verb, params) {
+  const pane = document.getElementById('cliPane');
+  const values = collect(verb);
+  const parts = ['<span class="bin">tako</span> <span class="sub">run</span> ' + escapeHtml(verb.name)];
+
+  for (const param of params) {
+    const value = values[param.name];
+    if (param.type === 'boolean') {
+      if (value === true) parts.push(`<span class="flag">--${escapeHtml(param.name)}</span>`);
+      continue;
+    }
+    if (value === undefined) {
+      if (param.required) parts.push(`<span class="flag">--${escapeHtml(param.name)}</span> <span class="str">&lt;${escapeHtml(param.type)}&gt;</span>`);
+      continue;
+    }
+    parts.push(`<span class="flag">--${escapeHtml(param.name)}</span> <span class="str">${escapeHtml(quote(value))}</span>`);
+  }
+
+  if (verb.risk === 'destructive') parts.push('<span class="flag">--yes</span>');
+  pane.innerHTML = parts.join(' ');
+}
+
+function quote(value) {
+  const text = String(value);
+  return /^[\w./:@-]+$/.test(text) ? text : `"${text.replace(/"/g, '\\"')}"`;
+}
+
+/* ── 面板三：Agent 工具定义 ───────────────────────────── */
+function renderTool(verb, params) {
+  const tool = {
+    type: 'function',
+    function: {
+      name: verb.name.replace(/[.-]/g, '_'),
+      description: [verb.description, verb.aiExample].filter(Boolean).join(' '),
+      parameters: {
+        type: 'object',
+        properties: Object.fromEntries(params.map((param) => [
+          param.name,
+          {
+            type: param.type ?? 'string',
+            description: param.description,
+            ...(param.enum ? { enum: param.enum } : {}),
+            ...(param.default !== undefined ? { default: param.default } : {})
+          }
+        ])),
+        required: params.filter((param) => param.required).map((param) => param.name),
+        additionalProperties: false
+      },
+      'x-tako': { verb: verb.name, arm: verb.arm, risk: verb.risk ?? 'read', idempotent: verb.idempotent ?? false }
+    }
+  };
+  document.getElementById('toolPane').textContent = JSON.stringify({ tools: [tool] }, null, 2);
+}
+
+/* ── 复制 ─────────────────────────────────────────────── */
+document.querySelectorAll('.copy').forEach((button) => {
+  button.addEventListener('click', async () => {
+    const verb = verbs[current];
+    const text = button.dataset.copy === 'cli'
+      ? document.getElementById('cliPane').textContent
+      : document.getElementById('toolPane').textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      button.textContent = '已复制';
+    } catch {
+      button.textContent = '复制失败';
+    }
+    setTimeout(() => { button.textContent = '复制'; }, 1300);
+  });
+});
+
+/* ── 工具函数 ─────────────────────────────────────────── */
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[ch]);
+}
+
+select(0);
+</script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+{
+  "tako": 1,
+  "project": "tako-pack-dev",
+  "description": "研发基础能力：看最近提交、扫代码里的待办事项。纯本地执行，不需要网络与令牌。",
+
+  "arms": [
+    {
+      "name": "local",
+      "adapter": "script",
+      "description": "本机命令，不需要网络"
+    }
+  ],
+
+  "verbs": [
+    {
+      "name": "git.recent",
+      "arm": "local",
+      "description": "列出当前仓库最近的提交（哈希 / 作者 / 日期 / 标题）",
+      "risk": "read",
+      "idempotent": true,
+      "aiExample": "当用户问「最近改了什么」「最近提交都有啥」「谁在动这个仓库」时调用。",
+      "action": { "script": "./scripts/git-recent.mjs" },
+      "params": [
+        {
+          "name": "count",
+          "type": "number",
+          "default": 10,
+          "description": "返回多少条"
+        },
+        {
+          "name": "author",
+          "type": "string",
+          "description": "只看某个作者的提交（支持模糊匹配）"
+        }
+      ]
+    },
+    {
+      "name": "todo.scan",
+      "arm": "local",
+      "description": "扫描源码里的 TODO / FIXME / HACK / XXX，按文件排行",
+      "risk": "read",
+      "idempotent": true,
+      "aiExample": "当用户问「代码里还有多少待办」「TODO 都堆在哪些文件」时调用。",
+      "action": { "script": "./scripts/todo-scan.mjs" },
+      "params": [
+        {
+          "name": "path",
+          "type": "string",
+          "default": ".",
+          "description": "扫描目录，相对项目根"
+        },
+        {
+          "name": "top",
+          "type": "number",
+          "default": 5,
+          "description": "文件排行榜长度"
+        }
+      ]
+    }
+  ]
+}

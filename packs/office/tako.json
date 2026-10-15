@@ -1,0 +1,94 @@
+{
+  "tako": 1,
+  "project": "tako-pack-office",
+  "description": "办公基础能力：文字生成配图（走接口、需令牌）、把大纲变成可播放的演示文稿（本机生成、离线可用）。",
+
+  "arms": [
+    {
+      "name": "image-api",
+      "adapter": "http",
+      "baseUrl": "https://api.openai.com/v1",
+      "description": "文生图服务。换成任意兼容 OpenAI 图像接口的地址即可，无需改代码。",
+      "auth": { "type": "bearer", "tokenEnv": "IMAGE_API_KEY" }
+    },
+    {
+      "name": "local",
+      "adapter": "script",
+      "description": "本机生成，不需要网络"
+    }
+  ],
+
+  "verbs": [
+    {
+      "name": "image.generate",
+      "arm": "image-api",
+      "description": "根据一段文字描述生成配图",
+      "risk": "write",
+      "aiExample": "当用户说「画一张…」「生成一张配图」「来张插图」时调用；调用前先把画面描述复述一遍确认。",
+      "action": {
+        "method": "POST",
+        "path": "/images/generations",
+        "headers": { "Content-Type": "application/json" }
+      },
+      "params": [
+        {
+          "name": "prompt",
+          "in": "body",
+          "type": "string",
+          "required": true,
+          "description": "画面描述，越具体越好",
+          "example": "一只章鱼在敲代码，扁平插画风，深色背景"
+        },
+        {
+          "name": "size",
+          "in": "body",
+          "type": "string",
+          "default": "1024x1024",
+          "enum": ["1024x1024", "1792x1024", "1024x1792"],
+          "description": "图片尺寸"
+        },
+        {
+          "name": "model",
+          "in": "body",
+          "type": "string",
+          "default": "gpt-image-1",
+          "description": "模型名"
+        },
+        {
+          "name": "n",
+          "in": "body",
+          "type": "number",
+          "default": 1,
+          "description": "生成张数"
+        }
+      ]
+    },
+    {
+      "name": "deck.html",
+      "arm": "local",
+      "description": "把大纲变成可播放的 HTML 演示文稿：浏览器全屏翻页，也能直接打印成 PDF",
+      "risk": "write",
+      "aiExample": "当用户说「做成 PPT」「生成一个演示文稿」「把这份大纲变成幻灯片」时调用。",
+      "action": { "script": "./scripts/deck-html.mjs" },
+      "params": [
+        {
+          "name": "outline",
+          "type": "string",
+          "required": true,
+          "description": "大纲内容：'# 标题' 开新页，'- 要点' 是要点，'### 小标题' 是页内小标题；以 @ 开头则读取该文件"
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "description": "演示文稿标题；不填则取大纲里的第一个 # 标题"
+        },
+        {
+          "name": "out",
+          "type": "string",
+          "default": "deck.html",
+          "description": "输出文件路径，相对项目根"
+        }
+      ]
+    }
+  ]
+}
