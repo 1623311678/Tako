@@ -1,0 +1,30 @@
+{
+  "name": "@hun-dun/tako-adapter-browser",
+  "version": "0.1.0",
+  "description": "tako 的官方浏览器驱动插件（Playwright 实现）：执行声明式步骤、录制页面请求",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs"
+  ],
+  "scripts": {
+    "smoke": "node --input-type=module -e \"import('./index.mjs').then(m=>console.log('插件可加载', typeof m.default))\""
+  },
+  "peerDependencies": {
+    "playwright": ">=1.40.0"
+  },
+  "keywords": [
+    "tako",
+    "tako-adapter",
+    "browser",
+    "playwright",
+    "automation"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

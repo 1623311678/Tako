@@ -44,6 +44,45 @@ export type {
 export { askManifest, scoreVerb, toRunCommand, tokenize } from './ask.js';
 export type { AskHit, AskOptions } from './ask.js';
 
-export { adapters, execute, resolveParams, secretEnvName, usageFor } from './run.js';
+export { adapters, execute, interpolateSteps, resolveParams, secretEnvName, usageFor } from './run.js';
+
+/** browser 驱动插件：加载与探测（核心不含驱动，只负责找它） */
+export {
+  BROWSER_PLUGIN_ENV,
+  BROWSER_PLUGIN_LOCAL_FILE,
+  BROWSER_PLUGIN_NAMES,
+  loadBrowserDriver,
+  probeBrowserPlugin,
+} from './driver.js';
+export type { DriverLoadReport, ResolvedPlugin } from './driver.js';
+
+/** capture：录制请求 → 反推 http 动词 */
+export { capture, deriveVerbs, mergeCapture, toFragment } from './capture.js';
+export type {
+  CaptureOptions,
+  CaptureOutcome,
+  DerivedArm,
+  DerivedParam,
+  DerivedVerb,
+} from './capture.js';
+
+/** verify：能力是否真能跑 */
+export { summarize, verifyManifest, verifyVerbs } from './verify.js';
+export type { VerifyCheck, VerifyOptions, VerifyReport, VerifySummary } from './verify.js';
+
+/** 能力仓库（git 就是仓库，不另搭服务） */
+export { buildPack, commitRepo, listRepo, looksLikeGit, readIndex, resolveRepo } from './repo.js';
+export type {
+  CapabilityPackMeta,
+  PushOptions,
+  PushResult,
+  RepoIndex,
+  RepoListing,
+  ResolvedRepo,
+} from './repo.js';
+
+/** 本地控制台：页面数据全部来自上面的公共 API */
+export { startConsole } from './console.js';
+export type { ConsoleHandle, ConsoleOptions } from './console.js';
 
 export type { ResolvedParams } from './run.js';

@@ -12,12 +12,14 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { TakoError } from './manifest.js';
+import { loadBrowserDriver } from './driver.js';
 import type {
   Adapter,
   AdapterContext,
   AdapterResult,
   Arm,
   BrowserPlan,
+  BrowserStep,
   ExecutionOptions,
   ExecutionResult,
   HttpMethod,
@@ -418,25 +420,105 @@ function fileExists(target: string): boolean {
   }
 }
 
-/* ── browser 适配器（接口预留） ─────────────────────────── */
+/* ── browser 适配器（声明式步骤 + 驱动插件） ─────────────── */
 
 const browserAdapter: Adapter = {
   plan(context: AdapterContext): BrowserPlan {
+    const { verb } = context;
+    const steps = verb.action.steps ?? [];
     return {
       kind: 'browser',
-      flow: context.verb.action.flow ?? context.verb.name,
-      note: '需要浏览器适配器插件',
+      flow: verb.action.flow ?? verb.name,
+      steps,
+      note:
+        steps.length > 0
+          ? `将执行 ${steps.length} 个步骤（由 browser 驱动插件实际执行）`
+          : '未声明 action.steps，无法执行',
     };
   },
 
   async invoke(context: InvokeContext): Promise<AdapterResult> {
-    throw new TakoError(
-      `browser 适配器尚未内置（动词 ${context.verb.name}）。安装插件：npm i takocli-adapter-browser，` +
-        '或先用 `tako capture` 把网页操作录成 http 能力。',
-      'ADAPTER_NOT_INSTALLED',
-    );
+    const { manifest, arm, verb, values, log } = context;
+    const steps = verb.action.steps ?? [];
+
+    if (steps.length === 0) {
+      throw new TakoError(
+        `动词 ${verb.name} 没有声明 action.steps，无法用 browser 适配器执行。\n` +
+          '  browser 动词靠声明式步骤描述「打开页面 → 操作 → 取值」，示例见 docs/design.md',
+        'ACTION_INVALID',
+      );
+    }
+
+    const resolved = interpolateSteps(steps, verb, values);
+    const driver = await loadBrowserDriver({ manifestDir: manifest.dir, rootDir: manifest.dir, log });
+
+    try {
+      const result = await driver.run({
+        steps: resolved,
+        flow: verb.action.flow ?? verb.name,
+        verb,
+        arm,
+        values,
+        timeoutMs: verb.timeoutMs,
+        rootDir: manifest.dir,
+        driverOptions: verb.action.driverOptions ?? {},
+        log,
+      });
+
+      return { data: { url: result.url, ...result.outputs } };
+    } finally {
+      await driver.close?.();
+    }
   },
 };
+
+/**
+ * 把步骤里的 `{{参数名}}` 换成实际值。
+ *
+ * 刻意不静默放过认不出的占位符 —— 大多数情况是拼错了参数名，
+ * 静默替换成空串会让页面行为变得难以解释。
+ */
+export function interpolateSteps(
+  steps: readonly BrowserStep[],
+  verb: Verb,
+  values: ParameterValues,
+): BrowserStep[] {
+  const missing = new Set<string>();
+
+  const replace = (text: string): string =>
+    text.replace(/\{\{([^}]+)\}\}/g, (_, rawName: string) => {
+      const name = rawName.trim();
+      const value = values[name];
+      if (value === undefined) {
+        missing.add(name);
+        return '';
+      }
+      return String(value);
+    });
+
+  const walk = (node: unknown): unknown => {
+    if (typeof node === 'string') return replace(node);
+    if (Array.isArray(node)) return node.map(walk);
+    if (node && typeof node === 'object') {
+      return Object.fromEntries(
+        Object.entries(node as Record<string, unknown>).map(([key, value]) => [key, walk(value)]),
+      );
+    }
+    return node;
+  };
+
+  const result = walk(steps) as BrowserStep[];
+
+  if (missing.size > 0) {
+    throw new TakoError(
+      `动词 ${verb.name} 的步骤引用了不存在的参数：${[...missing].join(', ')}\n` +
+        `  它支持的参数：${verb.params.map((param) => param.name).join(', ') || '（无）'}`,
+      'PARAM_UNKNOWN',
+    );
+  }
+
+  return result;
+}
 
 /** 适配器表在调用时解析，避开模块初始化顺序问题 */
 function adapterFor(name: string): Adapter | undefined {

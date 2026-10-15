@@ -13,7 +13,7 @@ Tako 干的就是这一层：**把系统里的动作声明成能力，让 AI 能
 flowchart LR
   M["tako.json<br/>能力清单"] --> A["Agent<br/>tako tools --json<br/>tako context"]
   M --> C["CLI<br/>tako run &lt;verb&gt;"]
-  M --> G["GUI<br/>按 params 渲染表单"]
+  M --> G["console<br/>tako console"]
 ```
 
 一份清单，三处生效。这就是 Tako 与普通 CLI 的根本差别：**CLI 只是壳，清单才是本体。**
@@ -31,7 +31,7 @@ flowchart LR
 | **清单** Manifest | `tako.json` | 项目的全部能力声明，唯一事实来源 |
 | **连接** arm | 一条到平台的连接 | 目标平台（GitLab、Jira、K8s、某个后台）+ 它的地址与鉴权方式 |
 | **动词** verb | 一条命令 | 一条可被调用的能力，名字即命令名 |
-| **适配器** adapter | 执行方式 | `http` 直连接口 / `script` 本地脚本 / `browser` 浏览器自动化 |
+| **适配器** adapter | 执行方式 | `http` 直连接口 / `script` 本地脚本 / `browser` 浏览器自动化（需驱动插件） |
 | **风险等级** risk | 闸门 | `read` 只读 / `write` 改数据 / `destructive` 不可逆（必须 `--yes`） |
 | **投喂示例** aiExample | 路由依据 | 告诉 Agent「什么情况下该调用这条能力」 |
 
@@ -84,6 +84,10 @@ npm link           # 想全局使用 tako 命令时
 | `tako context [--hook] [--json]` | 输出给 Agent 的清单上下文（`--hook` 供 hook 调用，永不阻断会话） |
 | `tako integrate [<目标>] [--list] [--scope <project\|user>] [--dry-run] [--remove]` | 把清单接进 Agent（hook 或 AGENTS.md） |
 | `tako ask "<人话>" [--top <n>] [--json]` | 用一句话找动词（本地匹配，best-effort） |
+| `tako capture --url <地址> [--seconds <n>] [--write] [--out <file>]` | 录网页操作，反推成 http 动词 |
+| `tako verify [<verb>...] [--live] [--include-write] [--params <json>]` | 验证能力能不能真跑 |
+| `tako push [<verb>...] --to <目录\|git 地址> [--pack <名>] [--approve] [--list]` | 把能力发布到能力仓库 |
+| `tako console [--port <n>] [--open]` | 本地控制台（零依赖、零构建） |
 
 ---
 
@@ -115,6 +119,170 @@ tako add office        # 办公包：image.generate、deck.html
 | `--verbose` | 打印执行细节到 stderr |
 
 **退出码**：`0` 成功 · `1` 运行失败 · `2` 用法或清单错误 · `3` 危险操作被拦截。
+
+---
+
+## browser 适配器：声明式步骤 + 驱动插件
+
+有些能力根本不在接口里 —— 它长在网页上。这时用 `browser` 适配器，用**声明式步骤**描述
+「打开页面 → 操作 → 取值」，不需要写代码：
+
+```json
+{
+  "name": "page.inspect",
+  "arm": "web",
+  "description": "打开页面，取回标题与列表条数",
+  "risk": "read",
+  "action": {
+    "steps": [
+      { "goto": "{{url}}" },
+      { "text": "h1", "as": "title" },
+      { "count": "li", "as": "itemCount" },
+      { "screenshot": "shots/page.png" }
+    ],
+    "driverOptions": { "headless": true }
+  },
+  "params": [
+    { "name": "url", "type": "string", "required": true, "description": "页面地址" }
+  ]
+}
+```
+
+```bash
+tako run page.inspect --url https://example.com/page
+tako run page.inspect --url ... --dry-run    # 只看步骤，不启动浏览器
+```
+
+支持的步骤：`goto` / `click` / `fill` / `press` / `waitFor` / `wait` /
+`text` / `texts` / `attribute` / `count` / `eval` / `screenshot`。
+字符串里的 `{{参数名}}` 会被该动词的参数替换；写错参数名会直接报错，不会静默变空。
+
+### 为什么驱动是插件，不在核心里
+
+Node 20 没有内置 `WebSocket`（Node 22 才有），零依赖实现 CDP 要自己写 WebSocket 帧协议 ——
+几百行安全敏感代码，直接打破「运行时依赖为 0」。而那条不变量正是 tako 启动速度的来源。
+
+所以分工是：**核心负责「解析步骤 + 托管鉴权 + 找驱动」，驱动由插件提供**。不用浏览器的用户
+不必付出这个体积代价。
+
+```bash
+npm i -D @hun-dun/tako-adapter-browser   # 官方 Playwright 驱动（含抓包，供 tako capture 用）
+```
+
+驱动解析顺序（先具体后抽象，方便本地试验）：
+
+| # | 位置 | 用途 |
+|---|---|---|
+| 1 | `TAKO_BROWSER_PLUGIN` 环境变量 | 模块名或文件路径，调试用 |
+| 2 | `<清单目录>/tako-browser.mjs` | 放一个文件就能用，不必发包 |
+| 3 | `<清单目录>/node_modules/…` | 在项目里 `npm i` |
+| 4 | 从 tako 自身位置解析 | 全局装一份，所有项目共用 |
+
+`tako doctor` 会直接把「装没装、装在哪」列出来；`tako run` 找不到驱动时报错也会列出
+**依次找过哪些位置**，而不是一句 `ADAPTER_NOT_INSTALLED`。
+
+> `driverOptions` 支持 `headless` / `channel`（默认优先用本机 Chrome）/ `slowMo` /
+> `persistState`（把登录态存到 `.tako/browser-state.json`，下次复用）。
+
+---
+
+## 从网页录出能力：`tako capture`
+
+手写 `tako.json` 的门槛从来不在 JSON，而在「你得先知道那个系统背后调了什么接口」。
+但人早就知道怎么点。所以让 ta 点一遍，我们把请求抓下来反推：
+
+```bash
+tako capture --url https://your-page --seconds 60     # 边操作边录
+tako capture --url https://your-page --write          # 反推结果直接写入清单
+tako capture --url https://your-page --json           # 只看反推结果
+tako capture --url https://your-page --out frag.json  # 只要片段
+```
+
+反推是**确定性**的，不做花哨猜测：
+
+| 清单里 | 从哪来 |
+|---|---|
+| 连接 arm | 按请求 origin 生成，`baseUrl` 就是 origin；抓到 Cookie 头则标成 cookie 鉴权 |
+| 动词名 | `<首个路径段>.<末个有意义路径段>`，撞名补方法后缀 |
+| 路径参数 | 数字 / UUID / 长十六进制段 → `:taskId`（不把某条记录的 ID 固化进清单） |
+| 查询参数 | query key 原样保留，类型按捕获值推断（`page=1` → number） |
+| 请求体 | JSON 顶层字段逐个变成 body 参数，捕获值当 `example` |
+| 风险 | GET/HEAD=read，DELETE=destructive，其余=write |
+
+只有 `xhr` / `fetch` 会被当成接口（页面自身、脚本、图片不是能力）。
+**原始捕获永远落盘** `.tako/captures/<时间>.json` —— 反推结果不合心意时，原始记录还在。
+
+> capture 只回答「调什么」。**「何时调用」的 `aiExample` 必须人来写** —— 那句话只能人写，写好了 Agent 路由才准。命令结束时会提醒你这件必做的事。
+
+---
+
+## 验证：`tako verify`
+
+capture 和 `add` 都会往清单里塞动词，而这些动词从没被跑过。verify 就是那道门。
+
+```bash
+tako verify                                  # 静态体检（零副作用）
+tako verify --live                           # 真的调用只读能力
+tako verify --live --include-write           # write 级也跑
+tako verify git.recent --live --params '{"count":3}'   # 指定动词 + 喂参
+```
+
+安全性是硬约束而不是提示：**GET 之外的默认不跑**；write 要 `--include-write`；
+destructive 要 `--include-write` 且 `--yes` —— verify 自己不该成为最危险的东西。
+
+检查项：连接与适配器、`baseUrl`、鉴权环境变量、脚本存在与越界、browser 步骤与驱动、
+必填参数可满足性，最后才是真实调用。退出码 `1` 表示有失败，可直接进 CI。
+
+---
+
+## 能力仓库：`tako push`
+
+能力就是文件（声明 + 自包含脚本），它天然适合被版本控制、被 review、被 fork。
+**所以仓库用 git，而不是自建服务** —— 版本、审核、权限、历史，git 已经全都有了。
+
+```bash
+tako push --to ./capability-repo                      # 发布全部动词
+tako push api.tasks --to git@host:team/repo.git        # 只发一个，推到 git
+tako push --to ./capability-repo --approve --reviewer 张三
+tako push --to ./capability-repo --list                # 仓库里有什么
+tako add demo-tasks --from ./capability-repo            # 消费（也支持 git 地址）
+```
+
+仓库形状：
+
+```
+index.json          包名 → 版本 / 动词 / 摘要 / 发布者 / 审核状态
+<pack>/tako.json    包清单（只含被推送的 verbs 与它们依赖的 arms）
+<pack>/meta.json    元数据（版本、摘要、审核状态）
+<pack>/scripts/…    script 动词的脚本，一起搬走 —— 包必须自包含
+```
+
+两个细节：
+
+- **摘要（digest）只覆盖内容，不含时间戳** —— 否则每次跑摘要都变，`内容有变化` 就失去意义；
+- **审核状态写在文件里**（`pending` / `approved`）且随 git 追溯，不藏在某个服务里。
+
+---
+
+## 控制台：`tako console`
+
+```bash
+tako console --open      # 打开 http://127.0.0.1:7788/
+```
+
+零依赖、零构建：直接用 `node:http` 提供一份自包含页面。
+受众是「已经装了 tako 的人」，让 ta 为了点一个按钮先跑 `npm install`，是把代价放错了地方。
+
+页面上的数据**全部来自上面的公共 API**（`toFormSpec` / `toCliUsage` / `toToolSpecs` /
+`toAgentContext`）—— 和 CLI 用的是同一组函数，这不是「又实现了一遍」，是三端同源可验证之处。
+
+左侧动词列表（可搜索）→ 右侧四个标签页：**表单** / **CLI** / **Agent 工具定义** / **Agent 上下文**，
+底部可 `dry-run 预览` 或直接执行；destructive 级动词必须先在页面上勾选二次确认。
+
+安全姿态：**只绑 127.0.0.1**。这是本地工具，不该被局域网访问。
+
+> 想要真正的多页应用（路由、主题、历史记录）时，Vite 才该上场 —— `console/` 那个位置仍然留着，
+> 它可以 `import { loadManifest, toFormSpec } from '@hun-dun/tako'`，与本页区别只是换了个壳。
 
 ---
 
@@ -237,6 +405,7 @@ import { loadManifest, toFormSpec, toCliUsage, toToolSpecs } from '@hun-dun/tako
 Tako/
 ├── tako.json               能力清单（3 条连接 + 5 个动词）
 ├── packs/                  官方能力包（纯声明 + 自包含脚本）
+├── adapters/browser/       官方浏览器驱动插件（独立包，依赖 playwright）
 ├── schema/tako.schema.json 清单的 JSON Schema
 ├── src/
 │   ├── types.ts            领域类型：清单 / 执行 / 投影的完整契约
@@ -244,6 +413,11 @@ Tako/
 │   ├── context.ts          投影四：清单 → 给 Agent 的文本上下文
 │   ├── integrate.ts        把清单接进 Agent（hook / AGENTS.md）
 │   ├── ask.ts              本地意图匹配：一句话 → 动词候选
+│   ├── driver.ts           browser 驱动插件加载与探测
+│   ├── capture.ts          录制请求 → 反推 http 动词
+│   ├── verify.ts           能力是否真能跑（静态 + live）
+│   ├── repo.ts             能力仓库（git 就是仓库）
+│   ├── console.ts          本地控制台（node:http，零构建）
 │   ├── pack.ts             能力包：装进来即用，核心一行不改
 │   ├── run.ts              运行时 + http / script / browser 适配器
 │   ├── cli.ts              命令面（bin 入口）
@@ -267,10 +441,11 @@ Tako/
 - [x] TypeScript 类型契约与公共 API
 - [x] `tako context` / `tako integrate` —— Agent 接入产品化（hook / AGENTS.md）
 - [x] `tako ask` —— 本地意图匹配（零依赖，best-effort）
-- [ ] `tako capture` —— 用浏览器录制真人操作，自动反推出清单
-- [ ] `tako verify` —— 对生成的能力做端到端验证
-- [ ] `tako push` —— 能力仓库与共享（带审核）
-- [ ] 可视化控制台（Vite 在这里，不在 CLI）
+- [x] browser 适配器：声明式步骤 + 驱动插件（含官方 Playwright 驱动）
+- [x] `tako capture` —— 录制真人操作，反推出 http 动词（含原始捕获落盘）
+- [x] `tako verify` —— 端到端验证（静态默认零副作用，--live 真调用）
+- [x] `tako push` —— 能力仓库：git 即仓库，审核状态可追溯
+- [x] `tako console` —— 本地控制台（零依赖，复用公共投影函数）
 
 ---
 

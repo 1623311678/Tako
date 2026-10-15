@@ -93,7 +93,9 @@
 
 ## 二、CLI 设计
 
-### 命令面（刻意极窄）
+### 命令面（刻意极窄，但不止六个）
+
+**能力面** —— 命令只有一个 `run`，具体能力由清单提供：
 
 ```
 tako ls [--arm <name>] [--risk <level>] [--json]
@@ -104,7 +106,19 @@ tako schema
 tako doctor
 ```
 
-六个命令，没有第七个。**能力本身不注册成命令**——命令只有一个 `run`，具体能力由清单提供。这样 CLI 的复杂度是常数级的。
+**平台面** —— 与「清单里有哪些能力」无关的固定动作：
+
+```
+tako context / integrate      把清单交给 Agent（hook / AGENTS.md）
+tako ask                      本地意图匹配（best-effort，不引 LLM）
+tako capture                  录制网页操作，反推 http 动词
+tako verify                   能力能不能真跑（静态默认零副作用）
+tako push / add --from …      能力仓库（git 即仓库，含审核元数据）
+tako console / init / add     本地界面、脚手架、能力包
+```
+
+判据没有变：**能力本身永远不注册成命令**。平台面每个命令的行为都不随清单里的动词数量变化，
+所以 CLI 的复杂度仍然是常数级。多出来的这些不是「第七个 run」，而是「谁来装、谁来验、谁来看」。
 
 ### 参数解析规则
 
@@ -162,7 +176,7 @@ const myAdapter: Adapter = {
 |---|---|---|
 | `http` | 已实现 | 基于全局 `fetch`，支持 query / path / body / header 四类参数、超时、鉴权注入、非 2xx 转错误 |
 | `script` | 已实现 | 动态 import 本地 ESM 脚本，`default export` 实现 `ScriptEntry`，收到 `ScriptContext` = `{ params, verb, log, readFile }` |
-| `browser` | 接口预留 | 声明式网页操作序列；未安装插件时给出明确的安装指引，而不是静默失败 |
+| `browser` | 已实现（驱动插件化） | 声明式 `action.steps` 网页操作序列，由驱动插件执行；核心只负责解析步骤、替换参数、托管鉴权与查找驱动。未安装插件时不静默失败，而是列出**依次找过哪些位置**。官方驱动在 `adapters/browser/`（Playwright 实现，含 `capture` 抓包）<br/>为什么插件化：Node 20 无内置 `WebSocket`，零依赖 CDP 需自写帧协议（数百行安全敏感代码），会打破「运行时依赖为 0」 |
 
 ---
 

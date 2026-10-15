@@ -236,8 +236,9 @@ function normalize(raw: RawManifest, file: string): Manifest {
 
     const action: VerbAction = rawVerb.action ?? {};
     const usesScript = Boolean(action.script);
-    if (!usesScript && !action.path) {
-      problems.push(`verb ${name} 缺少 action.path（或 action.script）`);
+    const usesBrowser = Boolean(action.steps?.length || action.flow);
+    if (!usesScript && !usesBrowser && !action.path) {
+      problems.push(`verb ${name} 缺少 action.path（或 action.script / action.steps）`);
     }
 
     const params = normalizeParams(rawVerb.params ?? [], usesScript, name, problems);

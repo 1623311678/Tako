@@ -8,6 +8,8 @@
  * CLI 是壳，清单才是本体。
  */
 
+import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,10 +27,26 @@ import { execute, usageFor } from './run.js';
 import { bundledPacksRoot, addPack, listPacks } from './pack.js';
 import { toAgentContext, toHookOutput } from './context.js';
 import { integrate, listIntegrations, resolveIntegration, type IntegrateScope } from './integrate.js';
+import { probeBrowserPlugin } from './driver.js';
 import { askManifest } from './ask.js';
+import { assertManifestValid, capture, mergeCapture, toFragment } from './capture.js';
+import { summarize, verifyVerbs, type VerifyReport } from './verify.js';
+import { buildPack, commitRepo, listRepo, looksLikeGit, resolveRepo } from './repo.js';
+import { startConsole } from './console.js';
 import type { Manifest, RiskLevel, TakoErrorCode } from './types.js';
 
-const VERSION = '0.1.1';
+const VERSION = readVersion();
+
+/** 版本号只从 package.json 读，不在代码里再写一份 —— 两份就会漂移 */
+function readVersion(): string {
+  try {
+    const file = fileURLToPath(new URL('../package.json', import.meta.url));
+    const pkg = JSON.parse(readFileSync(file, 'utf8')) as { version?: string };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
 
 /** 这些 flag 属于 CLI 自身，不会透传给能力当参数 */
 const RESERVED_FLAGS = new Set([
@@ -152,7 +170,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case 'init':
       return cmdInit(flags, positional[1]);
     case 'add':
-      return cmdAdd(flags, positional[1]);
+      return await cmdAdd(flags, positional[1]);
     case 'ls':
       return cmdList(flags);
     case 'describe':
@@ -164,13 +182,21 @@ async function main(argv: readonly string[]): Promise<number> {
     case 'schema':
       return cmdSchema(flags);
     case 'doctor':
-      return cmdDoctor(flags);
+      return await cmdDoctor(flags);
     case 'context':
       return cmdContext(flags);
     case 'integrate':
       return cmdIntegrate(flags, positional[1]);
     case 'ask':
       return cmdAsk(flags, positional.slice(1).join(' '));
+    case 'capture':
+      return await cmdCapture(flags);
+    case 'verify':
+      return await cmdVerify(flags, positional.slice(1));
+    case 'push':
+      return await cmdPush(flags, positional.slice(1));
+    case 'console':
+      return await cmdConsole(flags);
     default:
       process.stderr.write(`${red('未知命令：')} ${command}\n\n`);
       printHelp();
@@ -395,10 +421,11 @@ function cmdSchema(flags: Map<string, FlagValue>): number {
   return 0;
 }
 
-function cmdDoctor(flags: Map<string, FlagValue>): number {
+async function cmdDoctor(flags: Map<string, FlagValue>): Promise<number> {
   const manifest = load(flags);
   const lines: string[] = [];
   let warnings = 0;
+  const browserArms: string[] = [];
 
   lines.push(`${green('✓')} 清单可解析：${manifest.file}`);
   lines.push(`${green('✓')} ${manifest.arms.length} 条连接 / ${manifest.verbs.length} 个动词`);
@@ -414,10 +441,16 @@ function cmdDoctor(flags: Map<string, FlagValue>): number {
         else if (!process.env[envName]) problems.push(`环境变量 ${envName} 未设置`);
       }
     }
-    if (arm.adapter === 'browser') problems.push('browser 适配器需要额外插件');
     if (arm.adapter === 'script') {
       const hasScript = manifest.verbs.some((verb) => verb.arm === arm.name && verb.action.script);
       if (!hasScript) problems.push('script 类型的连接下没有任何 script 动词');
+    }
+    if (arm.adapter === 'browser') {
+      browserArms.push(arm.name);
+      const hasSteps = manifest.verbs.some(
+        (verb) => verb.arm === arm.name && (verb.action.steps?.length || verb.action.flow),
+      );
+      if (!hasSteps) problems.push('browser 类型的连接下没有任何带 steps 的动词');
     }
 
     if (problems.length === 0) {
@@ -435,6 +468,27 @@ function cmdDoctor(flags: Map<string, FlagValue>): number {
     }
     if (!verb.aiExample) {
       lines.push(`  ${yellow('!')} ${verb.name} 缺少 aiExample，Agent 的自动路由会变弱`);
+      warnings++;
+    }
+    if (verb.arm && manifest.armByName.get(verb.arm)?.adapter === 'browser' && !verb.action.steps?.length) {
+      lines.push(`  ${red('×')} ${verb.name} 是 browser 动词但没有 action.steps，执行时必然失败`);
+      warnings++;
+    }
+  }
+
+  // browser 驱动是插件：单独探测一次，把「装没装、装在哪」说清楚
+  if (browserArms.length > 0) {
+    const report = await probeBrowserPlugin(manifest.dir);
+    if (report.plugin) {
+      lines.push(
+        `  ${green('·')} browser 驱动就绪：${report.plugin.specifier} ${dim(`(${report.plugin.resolvedPath})`)}`,
+      );
+    } else {
+      lines.push(
+        `  ${yellow('!')} 未找到 browser 驱动插件（${browserArms.length} 条 browser 连接会执行失败）`,
+      );
+      for (const attempt of report.attempts) lines.push(`      ${dim(attempt)}`);
+      lines.push(`      ${dim('装法：npm i -D @hun-dun/tako-adapter-browser，或在清单目录放 tako-browser.mjs')}`);
       warnings++;
     }
   }
@@ -639,6 +693,400 @@ function cmdAsk(flags: Map<string, FlagValue>, query?: string): number {
   return 0;
 }
 
+/* ── capture ────────────────────────────────────────────── */
+
+/**
+ * 把「真人点出来的操作」录成能力声明。
+ *
+ * 刻意的分工：capture 只负责「看→反推」，不假装能理解业务。
+ * 生成的 aiExample 是一句占位语，让人去改成真正的「何时调用」——
+ * 那句话只能人来写，写好了 Agent 路由才准。
+ */
+async function cmdCapture(flags: Map<string, FlagValue>): Promise<number> {
+  const url = read(flags, 'url');
+  let manifestDir = process.cwd();
+  let hasManifest = true;
+  try {
+    manifestDir = load(flags).dir;
+  } catch {
+    hasManifest = false;
+  }
+
+  const secondsRaw = read(flags, 'seconds');
+  const seconds = secondsRaw === undefined ? 30 : Number(secondsRaw);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new TakoError('--seconds 需要是正数（秒）', 'USAGE');
+  }
+
+  const outcome = await capture({
+    manifestDir,
+    startUrl: url,
+    durationMs: Math.round(seconds * 1000),
+    include: splitList(read(flags, 'include')),
+    exclude: splitList(read(flags, 'exclude')),
+    allOrigins: has(flags, 'all-origins'),
+    log: (line) => {
+      if (has(flags, 'verbose')) process.stderr.write(`${dim(`· ${line}`)}\n`);
+    },
+  });
+
+  if (has(flags, 'json')) {
+    printJson({
+      url: outcome.url,
+      rawFile: outcome.rawFile,
+      arm: outcome.arm,
+      verbs: outcome.verbs,
+      captured: outcome.requests.length,
+      skipped: outcome.diagnostics.skipped,
+    });
+    return 0;
+  }
+
+  process.stdout.write(
+    `${green('✓')} 录到 ${bold(outcome.requests.length)} 条接口请求 ${dim(`（跳过 ${outcome.diagnostics.skipped.length} 条）`)}\n`,
+  );
+  process.stdout.write(
+    `${dim('连接')} ${outcome.arm.name} ${dim(`(http · ${outcome.arm.baseUrl})`)}\n`,
+  );
+  process.stdout.write(`${dim('原始记录')} ${outcome.rawFile}\n\n`);
+
+  const rows = outcome.verbs.map((verb) => [
+    cyan(verb.name),
+    riskBadge(verb.risk),
+    verb.action.method,
+    verb.params.length > 0 ? dim(`${verb.params.length} 个参数`) : dim('无参数'),
+  ]);
+  process.stdout.write(`${bold('反推出 ' + outcome.verbs.length + ' 个动词')}\n`);
+  process.stdout.write(`${renderTable(['VERB', 'RISK', 'METHOD', 'PARAMS'], rows)}\n`);
+
+  const out = read(flags, 'out');
+  if (out) {
+    const file = path.resolve(out);
+    writeFileSync(file, `${JSON.stringify(toFragment(outcome), null, 2)}\n`, 'utf8');
+    process.stdout.write(`\n${green('✓')} 片段已导出 ${file}\n`);
+  }
+
+  if (has(flags, 'write')) {
+    if (!hasManifest) {
+      throw new TakoError(
+        '当前目录没有 tako.json，无法 --write。\n  先 tako init，或用 --out 只导出片段。',
+        'MANIFEST_NOT_FOUND',
+      );
+    }
+    const manifestFile = path.join(manifestDir, 'tako.json');
+    const merged = mergeCapture({
+      manifestFile,
+      outcome,
+      force: has(flags, 'force'),
+    });
+
+    // 写完立刻回读校验，绝不留下一个坏清单
+    const manifest = assertManifestValid(manifestFile);
+
+    process.stdout.write(`\n${green('✓')} 已写入 ${manifestFile}\n`);
+    if (merged.addedArm) process.stdout.write(`${dim('新增连接')} ${merged.addedArm}\n`);
+    if (merged.addedVerbs.length > 0) {
+      process.stdout.write(`${dim('新增动词')} ${merged.addedVerbs.join(', ')}\n`);
+    }
+    for (const note of merged.skipped) process.stdout.write(`${yellow('·')} ${dim(note)}\n`);
+    process.stdout.write(`${dim('清单现在共')} ${manifest.verbs.length} ${dim('个动词')}\n`);
+  }
+
+  process.stdout.write(
+    `\n${yellow('必做')} 给新动词补 ${bold('aiExample')} —— 它决定 Agent 何时该调用这条能力。\n` +
+      `      capture 只能反推出「调什么」，那句话得人来写。\n` +
+      `${dim('下一步：')} 改完跑 ${bold('tako doctor')} 体检，再 ${bold('tako run <verb> --dry-run')} 看请求计划\n`,
+  );
+  return 0;
+}
+
+function splitList(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/* ── verify ─────────────────────────────────────────────── */
+
+/**
+ * 验证清单里的能力。默认只做静态体检（零副作用），--live 才真调用。
+ */
+async function cmdVerify(flags: Map<string, FlagValue>, names: readonly string[]): Promise<number> {
+  const manifest = load(flags);
+  const verbs = names.length > 0 ? names.map((name) => requireVerb(manifest, name)) : manifest.verbs;
+
+  const reports = await verifyVerbs(manifest, verbs, {
+    live: has(flags, 'live'),
+    includeWrite: has(flags, 'include-write'),
+    confirmed: has(flags, 'yes') || has(flags, 'y'),
+    params: parseParams(read(flags, 'params')),
+  });
+
+  const summary = summarize(reports);
+
+  if (has(flags, 'json')) {
+    printJson({ source: manifest.file, summary, reports });
+    return summary.failed > 0 ? 1 : 0;
+  }
+
+  const mode = has(flags, 'live') ? 'live' : 'static';
+  process.stdout.write(
+    `${bold(manifest.project)} ${dim(`· ${reports.length} 个动词 · ${mode} 验证`)}${dim(` · ${manifest.file}`)}\n\n`,
+  );
+
+  const rows = reports.map((report) => [
+    cyan(report.verb),
+    riskBadge(report.risk),
+    statusBadge(report.status),
+    truncateText(primaryDetail(report), 72),
+  ]);
+  process.stdout.write(`${renderTable(['VERB', 'RISK', 'STATUS', 'DETAIL'], rows)}\n\n`);
+
+  // 失败与跳过的具体原因单独展开，表格里放不下
+  for (const report of reports) {
+    if (report.status === 'pass') continue;
+    process.stdout.write(`${statusBadge(report.status)} ${bold(report.verb)}\n`);
+    for (const check of report.checks) {
+      if (check.status === 'pass') continue;
+      process.stdout.write(`  ${mark(check.status)} ${dim(check.name)} ${check.detail}\n`);
+    }
+    if (report.error && report.error.includes('\n')) {
+      for (const line of report.error.split('\n').slice(1, 6)) {
+        process.stdout.write(`    ${dim(line)}\n`);
+      }
+    }
+    process.stdout.write('\n');
+  }
+
+  const tone = summary.failed > 0 ? red : summary.skipped > 0 ? yellow : green;
+  process.stdout.write(
+    `${tone('结果')} 通过 ${summary.passed} · 失败 ${summary.failed} · 跳过 ${summary.skipped}\n`,
+  );
+
+  if (!has(flags, 'live') && manifest.verbs.some((verb) => verb.risk === 'read')) {
+    process.stdout.write(
+      `${dim('提示：')} 这轮没真调用。想端到端跑一遍：${bold('tako verify --live')}` +
+        `${dim('（write 级还需 --include-write）')}\n`,
+    );
+  }
+
+  if (summary.failed > 0) {
+    process.stdout.write(`\n${red('失败')} ${summary.failedVerbs.join(', ')}\n`);
+  }
+  return summary.failed > 0 ? 1 : 0;
+}
+
+function parseParams(raw: string | undefined): Record<string, unknown> | undefined {
+  if (!raw) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new TakoError(
+      `--params 需要是 JSON 对象，例如 --params '{"env":"test"}'\n  收到：${raw}`,
+      'USAGE',
+    );
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new TakoError('--params 需要是 JSON 对象（不是数组或标量）', 'USAGE');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function statusBadge(status: VerifyReport['status']): string {
+  if (status === 'pass') return green('pass'.padEnd(6));
+  if (status === 'fail') return red('FAIL'.padEnd(6));
+  return yellow('skip'.padEnd(6));
+}
+
+function mark(status: VerifyReport['status']): string {
+  return status === 'fail' ? red('×') : yellow('!');
+}
+
+/** 表格里那一列：pass 只看通过项，失败/跳过才展示原因 */
+function primaryDetail(report: VerifyReport): string {
+  if (report.status !== 'pass') {
+    const notable = report.checks.find((check) => check.status !== 'pass');
+    if (notable) return notable.detail;
+  }
+  const last = report.checks[report.checks.length - 1];
+  if (!last) return '';
+  return report.status === 'pass' && last.name === '参数' ? last.detail : `${last.name}: ${last.detail}`;
+}
+
+function truncateText(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+/* ── push ───────────────────────────────────────────────── */
+
+/**
+ * 把能力发布到能力仓库。仓库用 git，而不是自建服务 ——
+ * 版本、review、权限、历史，git 都已经有了（详见 src/repo.ts 的说明）。
+ */
+async function cmdPush(flags: Map<string, FlagValue>, names: readonly string[]): Promise<number> {
+  const to = read(flags, 'to');
+  if (!to) {
+    throw new TakoError(
+      '需要指定能力仓库：\n' +
+        '  tako push --to ./capability-repo\n' +
+        '  tako push --to git@host:team/capability-repo.git\n' +
+        '  先看看仓库里有什么：tako push --to <仓库> --list',
+      'USAGE',
+    );
+  }
+
+  const log = (line: string) => {
+    if (has(flags, 'verbose')) process.stderr.write(`${dim(`· ${line}`)}\n`);
+  };
+  const repo = await resolveRepo(to, log);
+
+  if (has(flags, 'list')) {
+    const listing = listRepo(repo.dir);
+    if (has(flags, 'json')) {
+      printJson(listing);
+      return 0;
+    }
+    process.stdout.write(
+      `${bold('能力仓库')} ${dim(repo.dir)}${repo.kind === 'git' ? dim(` ← ${repo.source}`) : ''}\n\n`,
+    );
+    if (listing.packs.length === 0) {
+      process.stdout.write(`${dim('  （还没有发布过能力包）')}\n`);
+      return 0;
+    }
+    const rows = listing.packs.map((pack) => [
+      cyan(pack.name),
+      pack.version,
+      String(pack.verbs.length),
+      pack.review.status === 'approved' ? green('approved') : yellow('pending'),
+      pack.review.reviewer ?? dim('-'),
+      dim(pack.digest),
+    ]);
+    process.stdout.write(
+      `${renderTable(['PACK', 'VERSION', 'VERBS', 'REVIEW', 'REVIEWER', 'DIGEST'], rows)}\n`,
+    );
+    return 0;
+  }
+
+  const manifest = load(flags);
+  const dryRun = has(flags, 'dry-run');
+
+  const result = buildPack({
+    manifestFile: manifest.file,
+    repo,
+    verbNames: names,
+    packName: read(flags, 'pack'),
+    version: read(flags, 'version'),
+    description: read(flags, 'description'),
+    publisher: read(flags, 'publisher'),
+    approve: has(flags, 'approve'),
+    reviewer: read(flags, 'reviewer'),
+    dryRun,
+    log,
+  });
+
+  const commit = dryRun
+    ? { committed: false, pushed: false, note: undefined as string | undefined }
+    : await commitRepo(
+        repo,
+        `tako push: ${result.pack.name}@${result.pack.version}（${result.pack.verbs.length} 个动词）`,
+        log,
+      );
+
+  if (has(flags, 'json')) {
+    printJson({ repo: { dir: repo.dir, kind: repo.kind, source: repo.source }, ...result, commit });
+    return 0;
+  }
+
+  process.stdout.write(
+    `${dryRun ? yellow('dry-run') : green('✓')} ${bold(result.pack.name)}@${result.pack.version} ` +
+      `${dim(`· ${result.pack.verbs.length} 个动词`)}${dryRun ? dim('（未写盘）') : ''}\n`,
+  );
+  process.stdout.write(`${dim('仓库')} ${repo.dir}${repo.kind === 'git' ? dim(` ← ${repo.source}`) : ''}\n`);
+  process.stdout.write(`${dim('内容')} ${result.pack.verbs.join(', ')}\n`);
+  process.stdout.write(`${dim('连接')} ${result.pack.arms.join(', ') || '（无）'}\n`);
+  process.stdout.write(
+    `${dim('摘要')} ${result.pack.digest}` +
+      (result.changed ? yellow('  ← 内容有变化') : dim('  （与上一版一致）')) +
+      '\n',
+  );
+  process.stdout.write(
+    `${dim('审核')} ` +
+      (result.pack.review.status === 'approved'
+        ? green(`approved by ${result.pack.review.reviewer ?? '?'}`)
+        : `${yellow('pending')} ${dim('（审查后加 --approve --reviewer <人> 标记通过）')}`) +
+      '\n',
+  );
+  if (result.scripts.length > 0) {
+    process.stdout.write(`${dim('脚本')} ${result.scripts.join(', ')}\n`);
+  }
+  if (commit.committed) {
+    process.stdout.write(`${dim('提交')} ${commit.pushed ? green('已提交并推送') : yellow('已提交（未推送）')}\n`);
+  }
+  if (commit.note) process.stdout.write(`${dim('  ·')} ${commit.note}\n`);
+
+  process.stdout.write(
+    `\n${dim('别人装上它：')} ${bold(`tako add ${result.pack.name} --from ${repo.source}`)}\n`,
+  );
+  return 0;
+}
+
+/* ── console ────────────────────────────────────────────── */
+
+/**
+ * 本地控制台：起一个零依赖的本地服务，提供三视图页面。
+ * 页面数据全部来自公共 API，和 CLI 用同一组函数 —— 不是又实现一遍。
+ */
+async function cmdConsole(flags: Map<string, FlagValue>): Promise<number> {
+  const manifest = load(flags);
+
+  const portRaw = read(flags, 'port');
+  const port = portRaw === undefined ? undefined : Number(portRaw);
+  if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+    throw new TakoError('--port 需要是 1-65535 的整数', 'USAGE');
+  }
+
+  const handle = await startConsole({
+    manifestFile: manifest.file,
+    port,
+    host: read(flags, 'host'),
+    log: () => {},
+  });
+
+  if (has(flags, 'json')) {
+    printJson({ url: handle.url, port: handle.port, manifest: manifest.file });
+  } else {
+    process.stdout.write(
+      `${green('✓')} 控制台已启动 ${bold(handle.url)}\n` +
+        `${dim('清单')} ${manifest.file} ${dim(`· ${manifest.verbs.length} 个动词`)}\n` +
+        `${dim('说明')} 只绑定本机回环地址；Ctrl+C 停止\n`,
+    );
+  }
+
+  if (has(flags, 'open')) openBrowser(handle.url);
+
+  // 一直服务到被中断：控制台是「开着用」的东西
+  await new Promise<void>((resolve) => {
+    const stop = (): void => {
+      void handle.close().then(resolve);
+    };
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  });
+  return 0;
+}
+
+function openBrowser(url: string): void {
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  try {
+    spawn(cmd, [url], { stdio: 'ignore', detached: true }).unref();
+  } catch {
+    // 打不开就算了：URL 已经打印出来
+  }
+}
+
 /* ── init ───────────────────────────────────────────────── */
 
 /** 生成 tako.json 骨架：这是「别人从零接入」的第一步 */
@@ -742,8 +1190,16 @@ function initTemplate(project: string): object {
 /* ── add ─────────────────────────────────────────────────── */
 
 /** 装上能力包：把纯数据的声明与自包含脚本合并进当前项目，核心零改动 */
-function cmdAdd(flags: Map<string, FlagValue>, packName?: string): number {
-  const from = read(flags, 'from');
+async function cmdAdd(flags: Map<string, FlagValue>, packName?: string): Promise<number> {
+  let from = read(flags, 'from');
+
+  // 仓库来源可以是 git 地址：先拉到本地缓存，再当成目录用
+  if (from && looksLikeGit(from)) {
+    const repo = await resolveRepo(from, (line) => {
+      if (has(flags, 'verbose')) process.stderr.write(`${dim(`· ${line}`)}\n`);
+    });
+    from = repo.dir;
+  }
 
   if (!packName || has(flags, 'list')) {
     const packs = listPacks(from);
@@ -868,7 +1324,11 @@ function printHelp(command?: string): number {
       `  ${cyan('doctor')}     体检清单、连接与环境变量\n` +
       `  ${cyan('context')}    输出给 AI Agent 的能力清单上下文（--hook 供 hook 调用）\n` +
       `  ${cyan('integrate')}  把能力清单接进 Agent（tako integrate --list 查看目标）\n` +
-      `  ${cyan('ask')}        用一句话找动词（本地匹配，best-effort）\n\n` +
+      `  ${cyan('ask')}        用一句话找动词（本地匹配，best-effort）\n` +
+      `  ${cyan('capture')}    录制网页操作，反推出 http 动词（需 browser 驱动插件）\n` +
+      `  ${cyan('verify')}     验证清单里的能力（默认零副作用，--live 真调用）\n` +
+      `  ${cyan('push')}       把能力发布到能力仓库（--to 目录或 git 地址）\n` +
+      `  ${cyan('console')}    本地控制台（零依赖，打开即用）\n\n` +
       `${bold('常用选项')}\n` +
       `  --file <path>   指定清单路径（默认向上查找 tako.json）\n` +
       `  --from <dir>    能力包来源目录（配合 tako add）\n` +
@@ -882,6 +1342,10 @@ function printHelp(command?: string): number {
       `${bold('例子')}\n` +
       `  tako context                    看 Agent 会收到什么\n` +
       `  tako ask "最近提交都有啥"       一句话找动词\n` +
+      `  tako capture --url https://x/ --write   录一遍网页操作→写入清单\n` +
+      `  tako verify --live                       端到端验证只读能力\n` +
+      `  tako push --to ./repo --approve          发布能力并标记审核通过\n` +
+      `  tako console --open                      打开本地控制台\n` +
       `  tako integrate claude-code      把清单接进 Claude Code / CodeFlicker\n` +
       `  tako add dev                    装上研发能力包\n` +
       `  tako ls --risk destructive\n` +
