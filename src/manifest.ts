@@ -119,8 +119,11 @@ export function findManifestPath(explicitPath?: string): string {
   }
 
   throw new TakoError(
-    '当前目录及上层目录都没有找到 tako.json。\n' +
-      '  用 --file <path> 指定清单路径，或在项目根目录新建一份 tako.json（格式见 docs/design.md）。',
+    `从 ${process.cwd()} 向上查找，没有找到 tako.json。\n\n` +
+      '  · 想在这里新建一个项目      tako init\n' +
+      '  · 清单在别的目录            tako --file <path> ls\n' +
+      '  · 只想看看有哪些能力包      tako add --list\n' +
+      '  · 想看看命令怎么用          tako --help',
     'MANIFEST_NOT_FOUND',
   );
 }

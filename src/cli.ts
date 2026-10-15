@@ -2,7 +2,8 @@
 /**
  * tako —— 让 AI 会操作。
  *
- * 命令面刻意保持极窄：只有 ls / describe / run / tools / schema / doctor 六个。
+ * 命令面刻意保持极窄：ls / describe / run / tools / schema / doctor 管能力本身，
+ * context / integrate 管「怎么把能力交给 Agent」。
  * 能力本身不写在这里，而是写在 tako.json 里 —— 这是 Tako 与普通 CLI 的根本差别：
  * CLI 是壳，清单才是本体。
  */
@@ -22,9 +23,12 @@ import {
 } from './manifest.js';
 import { execute, usageFor } from './run.js';
 import { bundledPacksRoot, addPack, listPacks } from './pack.js';
+import { toAgentContext, toHookOutput } from './context.js';
+import { integrate, listIntegrations, resolveIntegration, type IntegrateScope } from './integrate.js';
+import { askManifest } from './ask.js';
 import type { Manifest, RiskLevel, TakoErrorCode } from './types.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 
 /** 这些 flag 属于 CLI 自身，不会透传给能力当参数 */
 const RESERVED_FLAGS = new Set([
@@ -161,6 +165,12 @@ async function main(argv: readonly string[]): Promise<number> {
       return cmdSchema(flags);
     case 'doctor':
       return cmdDoctor(flags);
+    case 'context':
+      return cmdContext(flags);
+    case 'integrate':
+      return cmdIntegrate(flags, positional[1]);
+    case 'ask':
+      return cmdAsk(flags, positional.slice(1).join(' '));
     default:
       process.stderr.write(`${red('未知命令：')} ${command}\n\n`);
       printHelp();
@@ -438,6 +448,197 @@ function cmdDoctor(flags: Map<string, FlagValue>): number {
   return 0;
 }
 
+/* ── context ────────────────────────────────────────────── */
+
+/**
+ * 把清单投影成「喂给 Agent 的一段话」。
+ *
+ * 挂成 hook 时用 --hook：无论发生什么都要输出一行可解析的 JSON ——
+ * tako 自己的问题绝不能阻断用户的会话。
+ */
+function cmdContext(flags: Map<string, FlagValue>): number {
+  const isHook = has(flags, 'hook');
+
+  let manifest: Manifest | undefined;
+  let context: string | undefined;
+
+  try {
+    manifest = load(flags);
+    context = toAgentContext(manifest, { env: process.env });
+  } catch (error) {
+    if (!isHook) throw error;
+    if (has(flags, 'verbose')) {
+      process.stderr.write(
+        `${yellow('·')} ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
+
+  if (isHook) {
+    process.stdout.write(`${JSON.stringify(toHookOutput(context))}\n`);
+    return 0;
+  }
+
+  if (has(flags, 'json')) {
+    printJson({
+      project: manifest?.project ?? '',
+      source: manifest?.file ?? '',
+      verbCount: manifest?.verbs.length ?? 0,
+      verbs: (manifest?.verbs ?? []).map((verb) => ({
+        name: verb.name,
+        risk: verb.risk,
+        aiExample: verb.aiExample,
+      })),
+      context: context ?? '',
+    });
+    return 0;
+  }
+
+  process.stdout.write(`${context ?? ''}\n`);
+  return 0;
+}
+
+/* ── integrate ──────────────────────────────────────────── */
+
+/** 把「让 AI 会用 tako」从手工配置变成一条命令 */
+function cmdIntegrate(flags: Map<string, FlagValue>, targetId?: string): number {
+  if (!targetId || has(flags, 'list')) {
+    const rows = listIntegrations().map((item) => [
+      cyan(item.id),
+      dim(item.kind),
+      item.title,
+      item.description,
+    ]);
+    process.stdout.write(`${bold('可接入的 Agent')}\n\n`);
+    process.stdout.write(`${renderTable(['TARGET', 'KIND', 'AGENT', 'NOTES'], rows)}\n`);
+    if (!targetId) process.stdout.write(`\n${dim('接入其中一个：')} tako integrate <target>\n`);
+    return 0;
+  }
+
+  const target = resolveIntegration(targetId);
+  const scopeRaw = read(flags, 'scope') ?? 'project';
+  if (scopeRaw !== 'project' && scopeRaw !== 'user') {
+    throw new TakoError('--scope 只能是 project / user', 'USAGE');
+  }
+  const scope: IntegrateScope = scopeRaw;
+
+  // 项目级配置落在清单所在目录；没有清单时退化为当前目录，并明确提示
+  let rootDir = process.cwd();
+  let hasManifest = true;
+  try {
+    rootDir = load(flags).dir;
+  } catch {
+    hasManifest = false;
+  }
+
+  const result = integrate({
+    target,
+    rootDir,
+    scope,
+    command: read(flags, 'command'),
+    remove: has(flags, 'remove'),
+    dryRun: has(flags, 'dry-run'),
+  });
+
+  const label: Record<typeof result.action, string> = {
+    created: green('✓ 已接入'),
+    updated: green('✓ 已更新'),
+    removed: yellow('· 已移除'),
+    unchanged: dim('· 无需改动'),
+  };
+
+  process.stdout.write(
+    `${label[result.action]} ${bold(result.target.id)} ${dim(`(${result.target.title})`)}\n`,
+  );
+  process.stdout.write(`${dim('配置')} ${result.file}\n`);
+  if (result.command) process.stdout.write(`${dim('命令')} ${result.command}\n`);
+  for (const note of result.notes) process.stdout.write(`${dim('  ·')} ${note}\n`);
+
+  if (!hasManifest) {
+    process.stdout.write(`${yellow('!')} 当前目录没有 tako.json，配置落点按当前目录处理\n`);
+  }
+  if (result.action !== 'removed' && !has(flags, 'dry-run')) {
+    process.stdout.write(`\n${dim('下一步：')} 重启 IDE / 新开会话后，Agent 会自动收到能力清单\n`);
+  }
+  return 0;
+}
+
+/* ── ask ────────────────────────────────────────────────── */
+
+/** 低于这个分数就提示「仅供参考」，避免弱匹配被当真 */
+const WEAK_MATCH_SCORE = 4;
+
+/**
+ * 用一句话找动词。
+ *
+ * 刻意只做本地关键词匹配：CLI 里引入 LLM 会破坏「运行时依赖为 0」，
+ * 所以这里宁可弱一点，也要确定性、可解释。精确路由交给 Agent。
+ */
+function cmdAsk(flags: Map<string, FlagValue>, query?: string): number {
+  if (!query) {
+    throw new TakoError('用法：tako ask "你想做什么" [--top 3] [--json]', 'USAGE');
+  }
+
+  const manifest = load(flags);
+  const topRaw = read(flags, 'top');
+  const top = topRaw === undefined ? 3 : Number(topRaw);
+  if (!Number.isInteger(top) || top < 1) {
+    throw new TakoError('--top 需要是正整数', 'USAGE');
+  }
+
+  const hits = askManifest(manifest, query, { top });
+
+  if (has(flags, 'json')) {
+    printJson({
+      query,
+      source: manifest.file,
+      hits: hits.map((hit) => ({
+        verb: hit.verb.name,
+        risk: hit.verb.risk,
+        score: hit.score,
+        matched: hit.matched,
+        aiExample: hit.verb.aiExample,
+        command: hit.command,
+      })),
+    });
+    return 0;
+  }
+
+  process.stdout.write(`${bold('问：')} ${query}\n`);
+
+  if (hits.length === 0) {
+    process.stdout.write(
+      `${yellow('没有找到相关动词')}\n` +
+        `  · 看看有哪些：${bold('tako ls')}\n` +
+        `  · 装能力包：  ${bold('tako add --list')}\n` +
+        `  · 加新能力：  往 tako.json 的 verbs 里加一条\n`,
+    );
+    return 0;
+  }
+
+  process.stdout.write(
+    `${dim('本地关键词匹配，不是语义理解；要精确路由请让 Agent 读 tako context')}\n\n`,
+  );
+  const rows = hits.map((hit) => [
+    cyan(hit.verb.name),
+    riskBadge(hit.verb.risk),
+    String(hit.score),
+    hit.verb.aiExample || hit.verb.description,
+  ]);
+  process.stdout.write(`${renderTable(['VERB', 'RISK', 'SCORE', 'WHY'], rows)}\n`);
+
+  const best = hits[0];
+  if (best && best.score < WEAK_MATCH_SCORE) {
+    process.stdout.write(
+      `\n${yellow('!')} 匹配较弱（最高 ${best.score} 分）：仅供参考。\n` +
+        `  想让路由更准：在 tako.json 里给相关动词补 aiExample，或直接 tako ls 看全部\n`,
+    );
+  }
+
+  process.stdout.write(`\n${dim('执行：')} ${best?.command ?? ''}\n`);
+  return 0;
+}
+
 /* ── init ───────────────────────────────────────────────── */
 
 /** 生成 tako.json 骨架：这是「别人从零接入」的第一步 */
@@ -453,7 +654,11 @@ function cmdInit(flags: Map<string, FlagValue>, dirArg?: string): number {
 
   mkdirSync(target, { recursive: true });
   writeFileSync(manifestPath, `${JSON.stringify(initTemplate(projectName), null, 2)}\n`, 'utf8');
-  writeFileSync(path.join(target, '.gitignore'), 'node_modules/\n.env\n.tako/\n', 'utf8');
+  // 只在没有 .gitignore 时创建：覆盖别人已有的忽略规则是不可接受的副作用
+  const gitignorePath = path.join(target, '.gitignore');
+  if (!existsSync(gitignorePath)) {
+    writeFileSync(gitignorePath, 'node_modules/\n.env\n.tako/\n', 'utf8');
+  }
 
   process.stdout.write(
     `${green('✓')} 已创建 ${bold(projectName)}：${manifestPath}\n\n` +
@@ -660,16 +865,24 @@ function printHelp(command?: string): number {
       `  ${cyan('run')}        执行一个动词\n` +
       `  ${cyan('tools')}      输出 AI Agent 可注册的工具定义（JSON）\n` +
       `  ${cyan('schema')}     输出清单的 JSON Schema\n` +
-      `  ${cyan('doctor')}     体检清单、连接与环境变量\n\n` +
+      `  ${cyan('doctor')}     体检清单、连接与环境变量\n` +
+      `  ${cyan('context')}    输出给 AI Agent 的能力清单上下文（--hook 供 hook 调用）\n` +
+      `  ${cyan('integrate')}  把能力清单接进 Agent（tako integrate --list 查看目标）\n` +
+      `  ${cyan('ask')}        用一句话找动词（本地匹配，best-effort）\n\n` +
       `${bold('常用选项')}\n` +
       `  --file <path>   指定清单路径（默认向上查找 tako.json）\n` +
       `  --from <dir>    能力包来源目录（配合 tako add）\n` +
+      `  --scope <s>     配置落点 project / user（配合 tako integrate）\n` +
+      `  --hook          hook 模式：始终输出可解析 JSON，绝不阻断会话\n` +
       `  --force         覆盖已存在的清单项或脚本\n` +
       `  --json          机器可读输出\n` +
       `  --dry-run       只预览请求计划，不产生副作用\n` +
       `  --yes           确认执行 destructive 级动词\n` +
       `  --verbose       打印执行细节\n\n` +
       `${bold('例子')}\n` +
+      `  tako context                    看 Agent 会收到什么\n` +
+      `  tako ask "最近提交都有啥"       一句话找动词\n` +
+      `  tako integrate claude-code      把清单接进 Claude Code / CodeFlicker\n` +
       `  tako add dev                    装上研发能力包\n` +
       `  tako ls --risk destructive\n` +
       `  tako describe echo\n` +

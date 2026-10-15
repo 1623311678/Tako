@@ -1,10 +1,10 @@
 {
   "name": "@hun-dun/tako",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "让 AI 会操作。一份 tako.json，把系统声明成 AI 可调用的能力 —— GUI / CLI / Agent 三端同源。",
   "type": "module",
   "bin": {
-    "tako": "./dist/cli.js"
+    "tako": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

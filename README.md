@@ -11,7 +11,7 @@ Tako 干的就是这一层：**把系统里的动作声明成能力，让 AI 能
 
 ```mermaid
 flowchart LR
-  M["tako.json<br/>能力清单"] --> A["Agent<br/>tako tools --json"]
+  M["tako.json<br/>能力清单"] --> A["Agent<br/>tako tools --json<br/>tako context"]
   M --> C["CLI<br/>tako run &lt;verb&gt;"]
   M --> G["GUI<br/>按 params 渲染表单"]
 ```
@@ -81,6 +81,9 @@ npm link           # 想全局使用 tako 命令时
 | `tako tools [--json]` | 输出 AI Agent 工具定义 |
 | `tako schema` | 输出清单的 JSON Schema |
 | `tako doctor` | 校验清单、连接、环境变量与文档完整性 |
+| `tako context [--hook] [--json]` | 输出给 Agent 的清单上下文（`--hook` 供 hook 调用，永不阻断会话） |
+| `tako integrate [<目标>] [--list] [--scope <project\|user>] [--dry-run] [--remove]` | 把清单接进 Agent（hook 或 AGENTS.md） |
+| `tako ask "<人话>" [--top <n>] [--json]` | 用一句话找动词（本地匹配，best-effort） |
 
 ---
 
@@ -112,6 +115,67 @@ tako add office        # 办公包：image.generate、deck.html
 | `--verbose` | 打印执行细节到 stderr |
 
 **退出码**：`0` 成功 · `1` 运行失败 · `2` 用法或清单错误 · `3` 危险操作被拦截。
+
+---
+
+## Agent 接入：让 AI 会用
+
+清单本身不会说话。 Agent 端还需一步：把清单喂进模型上下文。这就是 `context` 与 `integrate` 两个命令。
+
+```bash
+tako context --hook        # 输出一行 JSON，additionalContext 里就是完整清单摘要
+tako integrate --list      # 看看支持哪些 Agent
+tako integrate claude-code # 把 hook 注册进 .claude/settings.json
+```
+
+两种接入方式，对应两类 Agent：
+
+| 方式 | 适用 | 原理 |
+|---|---|---|
+| **hook** | 支持生命周期 hook 的 Agent（Claude Code / CodeFlicker） | 会话启动时注入清单，无需 Agent 主动查 |
+| **markdown** | 只读项目说明文件的 Agent（Codex 等） | 在 `AGENTS.md` 写入「先跑 `tako context`」的指针 |
+
+markdown 写的是**指针而不是快照**，所以清单永远现取、永不过期。
+
+注册出来的内容长这样，**命令是 `tako context --hook`，不写 node / 绝对路径** ——
+因此这份配置可以提交 git，队友装了 tako 就自动生效：
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "tako context --hook", "timeout": 10 }] }
+    ]
+  }
+}
+```
+
+注：`tako context --hook` 在任何异常下都输出可解析的 JSON —— hook 绝不能因为 tako 自己的问题而阻断用户的会话。
+
+改主意了也能干净回滚，只搞掉自己写入的那条，不碰你原有的配置：
+
+```bash
+tako integrate claude-code --remove
+```
+
+---
+
+## 在终端里说人话（best-effort）
+
+命令行里没有 LLM，没有人把「帮我看看最近改了什么」翻译成 `tako run git.recent`。
+你若在纯终端里（不挂 Agent），可以用 `tako ask` 做一个零依赖的本地调子：
+
+```bash
+tako ask "查看最近10条提交记录"
+tako ask "扫一下代码里的待办，给我top8"
+```
+
+它会拿你的句子去清单里的 `name` / `tags` / `aiExample` / `description` 上打分
+（中文按二元组切），返回候选动词、分数、命中词，以及可直接执行的命令。
+
+**为什么只做本地匹配、不内置 LLM**：Tako 的运行时依赖为 0，启动速度就是它最好的特性。
+拿不准的语义路由属于 Agent 层（`tako context` + LLM），不属于 CLI 层。
+分数过低时它会明说「仅供参考」，而不是编一个自信的答案。
 
 ---
 
@@ -177,6 +241,10 @@ Tako/
 ├── src/
 │   ├── types.ts            领域类型：清单 / 执行 / 投影的完整契约
 │   ├── manifest.ts         加载 → 校验 → 归一化 → 三视图投影
+│   ├── context.ts          投影四：清单 → 给 Agent 的文本上下文
+│   ├── integrate.ts        把清单接进 Agent（hook / AGENTS.md）
+│   ├── ask.ts              本地意图匹配：一句话 → 动词候选
+│   ├── pack.ts             能力包：装进来即用，核心一行不改
 │   ├── run.ts              运行时 + http / script / browser 适配器
 │   ├── cli.ts              命令面（bin 入口）
 │   └── index.ts            公共 API（CLI 与控制台共用）
@@ -197,6 +265,8 @@ Tako/
 - [x] CLI / GUI / Agent 三视图投影
 - [x] 风险分级与 dry-run
 - [x] TypeScript 类型契约与公共 API
+- [x] `tako context` / `tako integrate` —— Agent 接入产品化（hook / AGENTS.md）
+- [x] `tako ask` —— 本地意图匹配（零依赖，best-effort）
 - [ ] `tako capture` —— 用浏览器录制真人操作，自动反推出清单
 - [ ] `tako verify` —— 对生成的能力做端到端验证
 - [ ] `tako push` —— 能力仓库与共享（带审核）
